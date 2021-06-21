@@ -1,4 +1,4 @@
-# Physics Puppet Blender Addon
+# Shape Spritesheet Painter Blender Addon
 # Copyright (C) 2021 Pierre
 #
 # This program is free software: you can redistribute it and/or modify it under
@@ -63,9 +63,11 @@ class SHASPRI_PT_SheetPainting(bpy.types.Panel):
     bl_category = 'Shape Spritesheet Painter'
 
     def draw(self, context):
-        self.layout.operator('shaspri.createshapekeyforoffset', text ='Create Shape Key at UV Offset for Selected')
+        self.layout.operator('shaspri.createshapekeyforoffset', text ='Create Shape Key At UV Offset For Selected')
         self.layout.operator('shaspri.editsheetmask', text ='Edit Spritesheet Mask For Active')
-
+        self.layout.operator('shaspri.offseteditsheet', text ='Edit Spritesheet At Current UV Offset For Active')
+        self.layout.operator('shaspri.reactivatesheet', text ='Reactivate Spritesheet Drivers For Active')
+        
 #function to add a layer frame of vector displacement and color to selected
 class SHASPRI_OT_AddMaskedSpriteLayer(bpy.types.Operator):
     bl_idname = "shaspri.addmaskedspritelayer"
@@ -73,11 +75,17 @@ class SHASPRI_OT_AddMaskedSpriteLayer(bpy.types.Operator):
     bl_description = "Set up images and nodes for a layer of masked sprite sheet driven by an empty"
     
     def execute(self, context):
-        for candidatePaintingObject in bpy.context.selected_objects:
+        originalSelectedObjects = bpy.context.selected_objects
+        for candidatePaintingObject in originalSelectedObjects:
             if(candidatePaintingObject.type == 'MESH'):
+                #make sure that any existing spritesheet is using the correct node tree
+                bpy.ops.object.select_all(action='DESELECT')
+                candidatePaintingObject.select_set(True)
+                context.view_layer.objects.active = candidatePaintingObject
+                bpy.ops.shaspri.reactivatesheet()
+                #if there is no material create one, otherwise operate on currently active material
                 paintingObject = candidatePaintingObject
                 objectMaterial = None
-                #if there is no material create one, otherwise operate on currently active material
                 if(len(paintingObject.material_slots) < 1):
                     objectMaterial = bpy.data.materials.new("shaspri_mat_" + paintingObject.name)
                     paintingObject.data.materials.append(objectMaterial)
@@ -125,7 +133,7 @@ class SHASPRI_OT_AddMaskedSpriteLayer(bpy.types.Operator):
                 maskMultiplyNode = None
                 newSpriteSheet = False
                 spriteSheetName = context.scene.SHASPRISpritesheetName
-                if("shaspri_" + paintingObject.name + "_" + spriteSheetName + "_sheet" in dataNodeGroup.nodes):
+                if(("shaspri_" + spriteSheetName + "_sheet") in dataNodeGroup.nodes):
                     self.report({'WARNING'}, 'Spritesheet \'' + spriteSheetName + '\' already exists for \'' + paintingObject.name + '\', please choose a different spritesheet name to make a new spritesheet.')
                 else:
                     if(os.path.isdir(spritesheetFolderPath) == False):
@@ -311,11 +319,13 @@ class SHASPRI_OT_EditSheetMask(bpy.types.Operator):
         #determine if object has the required nodegroup and nodes
         if(candidatePaintingObject.type == 'MESH'):
             for candidateMaterial in candidatePaintingObject.material_slots:
-                if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes):
+                materialLocated = False
+                if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes and materialLocated == False):
                     spriteSheetName = context.scene.SHASPRISpritesheetName
                     nodeGroupTree = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup'].node_tree
                     maskImageName = "shaspri_" + candidatePaintingObject.name + "_" + spriteSheetName + "_mask"
                     if(maskImageName in bpy.data.images):
+                        materialLocated = True
                         #change painting canvas to mask image
                         bpy.context.scene.tool_settings.image_paint.mode = 'IMAGE'
                         bpy.context.scene.tool_settings.image_paint.canvas = bpy.data.images[maskImageName]
@@ -329,13 +339,94 @@ class SHASPRI_OT_EditSheetMask(bpy.types.Operator):
                             if(candidate3darea.type == 'VIEW_3D'):
                                 candidate3darea.spaces[0].shading.type = 'SOLID'
         return {'FINISHED'}
-             
+    
+#function to create a temporary uv layer offset by the empty amound and edit the sprite sheet texture using the uv
+class SHASPRI_OT_OffsetEditSheet(bpy.types.Operator):
+    bl_idname = "shaspri.offseteditsheet"
+    bl_label = "Edit spritesheet at current UV offset"
+    bl_description = "Switch to a temporary UV layer and node setup at the current spritesheet uv offset for editing the spritesheet colors"
+    
+    def execute(self, context):
+        sceneObjects = bpy.context.scene.objects
+        candidatePaintingObject = bpy.context.active_object
+        #if selected object is uv offset empty, switch to the related object
+        if('shaspri_' in candidatePaintingObject.name):
+            if(candidatePaintingObject.name.split('_')[1] in sceneObjects):
+                candidatePaintingObject = sceneObjects[candidatePaintingObject.name.split('_')[1]]
+        #determine if object has the required nodegroup and nodes
+        spriteSheetName = context.scene.SHASPRISpritesheetName
+        if(candidatePaintingObject.type == 'MESH'):
+            for candidateMaterial in candidatePaintingObject.material_slots:
+                materialLocated = False
+                if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes and materialLocated == False):
+                    nodeGroup = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup']
+                    if("shaspri_" + spriteSheetName + "_uvoffset" in nodeGroup.node_tree.nodes):
+                        materialLocated = True
+                        #get desired uv offset for current sheet
+                        vectorMappingNode = nodeGroup.node_tree.nodes["shaspri_" + spriteSheetName + "_uvoffset"]
+                        uvOffset = vectorMappingNode.inputs[1].default_value
+                        #make temporary offset uv
+                        if('shaspri_tempuv' in candidatePaintingObject.data.uv_layers):
+                            candidatePaintingObject.data.uv_layers.remove(candidatePaintingObject.data.uv_layers['shaspri_tempuv'])
+                        temporaryUV = candidatePaintingObject.data.uv_layers.new(name='shaspri_tempuv')
+                        for temporaryUVPosition in temporaryUV.data:
+                            temporaryUVPosition.uv[0] = temporaryUVPosition.uv[0] + uvOffset[0]
+                            temporaryUVPosition.uv[1] = temporaryUVPosition.uv[1] + uvOffset[1]
+                        #use temporary nodegroup to access the shifted uv
+                        duplicateDataNodeGroup = nodeGroup.node_tree.copy()
+                        duplicateDataNodeGroup.name = 'shaspri_tempnodegroup'
+                        tempOffsetNode = duplicateDataNodeGroup.nodes["shaspri_" + spriteSheetName + "_uvoffset"]
+                        tempUVInputNode = duplicateDataNodeGroup.nodes["shaspri_" + spriteSheetName + "_uvsource"]
+                        duplicateDataNodeGroup.animation_data_clear()
+                        tempOffsetNode.inputs[1].default_value = (0,0,0)
+                        tempUVInputNode.uv_map = temporaryUV.name
+                        nodeGroup.node_tree = duplicateDataNodeGroup
+                        #select object with material, set to offset uv layer and enter image paint mode
+                        bpy.ops.object.select_all(action='DESELECT')
+                        candidatePaintingObject.select_set(True)
+                        context.view_layer.objects.active = candidatePaintingObject
+                        bpy.context.scene.tool_settings.image_paint.mode = 'IMAGE'
+                        bpy.context.scene.tool_settings.image_paint.canvas = bpy.data.images["shaspri_" + candidatePaintingObject.name + "_" + spriteSheetName + "_sheet"]
+                        candidatePaintingObject.data.uv_layers.active_index += 1
+                        bpy.ops.paint.texture_paint_toggle()
+        return {'FINISHED'}
+    
+#function to revert to main nodegroup after using temporary nodegroup
+class SHASPRI_OT_ReactivateSheet(bpy.types.Operator):
+    bl_idname = "shaspri.reactivatesheet"
+    bl_label = "Reactivate spritesheet drivers for active"
+    bl_description = "Clear temporary offsets on uv and re-enable uv offset drivers"
+    
+    def execute(self, context):
+        sceneObjects = bpy.context.scene.objects
+        candidatePaintingObject = bpy.context.active_object
+        #if selected object is uv offset empty, switch to the related object
+        if('shaspri_' in candidatePaintingObject.name):
+            if(candidatePaintingObject.name.split('_')[1] in sceneObjects):
+                candidatePaintingObject = sceneObjects[candidatePaintingObject.name.split('_')[1]]
+        #determine if object has the required nodegroup and nodes
+        spriteSheetName = context.scene.SHASPRISpritesheetName
+        if(candidatePaintingObject.type == 'MESH' and ("shaspri_" + candidatePaintingObject.name + "_nodegroup") in bpy.data.node_groups):
+            for candidateMaterial in candidatePaintingObject.material_slots:
+                if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes):
+                    nodeGroup = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup']
+                    if(nodeGroup.node_tree.name == 'shaspri_tempnodegroup'):
+                        nodeGroup.node_tree = bpy.data.node_groups["shaspri_" + candidatePaintingObject.name + "_nodegroup"]
+                        bpy.data.node_groups.remove(bpy.data.node_groups['shaspri_tempnodegroup'])
+            #remove temporary uv to revert to final uv
+            if('shaspri_tempuv' in candidatePaintingObject.data.uv_layers):
+                candidatePaintingObject.data.uv_layers.remove(candidatePaintingObject.data.uv_layers['shaspri_tempuv'])
+        return {'FINISHED'}
+    
+    
 #register and unregister all Shape Sprite Painter classes
 shaspriClasses = (  SHASPRI_PT_LayerSetup,
                     SHASPRI_PT_SheetPainting,
                     SHASPRI_OT_AddMaskedSpriteLayer,
                     SHASPRI_OT_CreateShapeKeyForOffset,
-                    SHASPRI_OT_EditSheetMask
+                    SHASPRI_OT_EditSheetMask,
+                    SHASPRI_OT_OffsetEditSheet,
+                    SHASPRI_OT_ReactivateSheet
                     )
 
 register, unregister = bpy.utils.register_classes_factory(shaspriClasses)
