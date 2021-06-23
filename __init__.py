@@ -40,15 +40,19 @@ class SHASPRI_PT_LayerSetup(bpy.types.Panel):
     bpy.types.Scene.SHASPRISpritesheetName = bpy.props.StringProperty(name="Spritesheet Name", description="The name to use for a newly created spritesheet and mask", maxlen=20, default="ShaspriSheet")
     bpy.types.Scene.SHASPRIXResolution = bpy.props.IntProperty(name="Spritesheet Horizontal Resolution", description="Horizontal resolution for new spritesheet", default=2048, subtype='PIXEL')
     bpy.types.Scene.SHASPRIYResolution = bpy.props.IntProperty(name="Spritesheet Vertical Resolution", description="Vertical resolution for new spritesheet", default=2048, subtype='PIXEL')
+    bpy.types.Scene.SHASPRISnapSpritesheet = bpy.props.BoolProperty(name="Snap Spritesheet Position", description="Round down the spritesheet position for activating mapped shapekeys without moving the spritesheet image", default=False)
     bpy.types.Scene.SHASPRILinkOutput = bpy.props.BoolProperty(name="Link Spritesheet Nodegroup to Existing Nodes", description="Attempt to link the spritesheet to the existing node setup", default=True)
     bpy.types.Scene.SHASPRIMakeBaseColor = bpy.props.BoolProperty(name="Create Base Color Image", description="Create a base color image texture in the spritesheets folder and include it in the node setup", default=False)
     bpy.types.Scene.SHASPRIBaseColorName = bpy.props.StringProperty(name="Base Color Image Name", description="Name for the base color image texture", maxlen=20, default="ShaspriBase")
+    bpy.types.Scene.SHASPRISheetMappingScale = bpy.props.IntProperty(name="Shape Key Driver Mapping Scale", description="How the driver object position maps to the uv offset position. Higher values means more sensitivity", default=20)
 
     def draw(self, context):
         self.layout.prop(context.scene,"SHASPRISpritesheetsFolder")
         self.layout.prop(context.scene,"SHASPRISpritesheetName")
         self.layout.prop(context.scene,"SHASPRIXResolution")
         self.layout.prop(context.scene,"SHASPRIYResolution")
+        self.layout.prop(context.scene,"SHASPRISheetMappingScale")
+        self.layout.prop(context.scene,"SHASPRISnapSpritesheet")
         self.layout.prop(context.scene,"SHASPRIMakeBaseColor")
         self.layout.prop(context.scene,"SHASPRIBaseColorName")
         self.layout.prop(context.scene,"SHASPRILinkOutput")
@@ -61,8 +65,10 @@ class SHASPRI_PT_SheetPainting(bpy.types.Panel):
     bl_label = 'Painting and Shape Keys'
     bl_context = 'objectmode'
     bl_category = 'Shape Spritesheet Painter'
+    bpy.types.Scene.SHASPRIShapeKeyFalloff = bpy.props.IntProperty(name="Shape Key Falloff", description="How quickly a shape key value reaches 0 when the driver object is moved away from the shape key target. Higher values mean faster falloff", default=20)
 
     def draw(self, context):
+        self.layout.prop(context.scene,"SHASPRIShapeKeyFalloff")
         self.layout.operator('shaspri.createshapekeyforoffset', text ='Create Shape Key At UV Offset For Selected')
         self.layout.operator('shaspri.editsheetmask', text ='Edit Spritesheet Mask For Active')
         self.layout.operator('shaspri.offseteditsheet', text ='Edit Spritesheet At Current UV Offset For Active')
@@ -237,7 +243,9 @@ class SHASPRI_OT_AddMaskedSpriteLayer(bpy.types.Operator):
                             emptyLocationVar.targets[0].transform_space = 'LOCAL_SPACE'
                             emptyLocationVar.targets[0].transform_type = 'LOC_' + driverAxisNames[axisNumber]
                             emptyLocationVar.targets[0].id = uvDriverObject
-                            axisDrivers[axisNumber].driver.expression = emptyLocationVar.name + '/20'
+                            axisDrivers[axisNumber].driver.expression = emptyLocationVar.name + '/' + str(context.scene.SHASPRISheetMappingScale)
+                            if(context.scene.SHASPRISnapSpritesheet == True):
+                                axisDrivers[axisNumber].driver.expression = 'floor(' + emptyLocationVar.name + ')/' + str(context.scene.SHASPRISheetMappingScale)
                         #switch image paint to single image
                         bpy.context.scene.tool_settings.image_paint.mode = 'IMAGE'
                 #generate a base color image texture if requested
@@ -300,7 +308,8 @@ class SHASPRI_OT_CreateShapeKeyForOffset(bpy.types.Operator):
                     emptyLocationVar.name = 'EMPTYDRIVER_DISTANCE'
                     emptyLocationVar.targets[0].id = uvDriverObject
                     emptyLocationVar.targets[1].id = uvDriverTarget
-                    keyValueDriver.driver.expression = 'clamp(1 - (' + emptyLocationVar.name + '*10),0,1)'
+                    keyValueDriver.driver.expression = 'clamp(1 - (' + emptyLocationVar.name + '*' + str(context.scene.SHASPRIShapeKeyFalloff) + '),0,1)'
+                    uvDriverTarget.hide_select = True
         return {'FINISHED'}
     
 #function to prepare nodes and texture paint for mask editing
@@ -317,11 +326,11 @@ class SHASPRI_OT_EditSheetMask(bpy.types.Operator):
             if(candidatePaintingObject.name.split('_')[1] in sceneObjects):
                 candidatePaintingObject = sceneObjects[candidatePaintingObject.name.split('_')[1]]
         #determine if object has the required nodegroup and nodes
+        materialLocated = False
+        spriteSheetName = context.scene.SHASPRISpritesheetName
         if(candidatePaintingObject.type == 'MESH'):
             for candidateMaterial in candidatePaintingObject.material_slots:
-                materialLocated = False
                 if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes and materialLocated == False):
-                    spriteSheetName = context.scene.SHASPRISpritesheetName
                     nodeGroupTree = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup'].node_tree
                     maskImageName = "shaspri_" + candidatePaintingObject.name + "_" + spriteSheetName + "_mask"
                     if(maskImageName in bpy.data.images):
@@ -338,6 +347,8 @@ class SHASPRI_OT_EditSheetMask(bpy.types.Operator):
                         for candidate3darea in bpy.context.screen.areas:
                             if(candidate3darea.type == 'VIEW_3D'):
                                 candidate3darea.spaces[0].shading.type = 'SOLID'
+        if(materialLocated == False):
+            self.report({'WARNING'}, 'Could not edit spritesheet mask for sheet \'' + spriteSheetName + '\'. Please use \'Add New Masked Spritesheet Layer\' to set up this spritesheet.')
         return {'FINISHED'}
     
 #function to create a temporary uv layer offset by the empty amound and edit the sprite sheet texture using the uv
@@ -354,10 +365,10 @@ class SHASPRI_OT_OffsetEditSheet(bpy.types.Operator):
             if(candidatePaintingObject.name.split('_')[1] in sceneObjects):
                 candidatePaintingObject = sceneObjects[candidatePaintingObject.name.split('_')[1]]
         #determine if object has the required nodegroup and nodes
+        materialLocated = False
         spriteSheetName = context.scene.SHASPRISpritesheetName
         if(candidatePaintingObject.type == 'MESH'):
             for candidateMaterial in candidatePaintingObject.material_slots:
-                materialLocated = False
                 if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes and materialLocated == False):
                     nodeGroup = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup']
                     if("shaspri_" + spriteSheetName + "_uvoffset" in nodeGroup.node_tree.nodes):
@@ -388,7 +399,14 @@ class SHASPRI_OT_OffsetEditSheet(bpy.types.Operator):
                         bpy.context.scene.tool_settings.image_paint.mode = 'IMAGE'
                         bpy.context.scene.tool_settings.image_paint.canvas = bpy.data.images["shaspri_" + candidatePaintingObject.name + "_" + spriteSheetName + "_sheet"]
                         candidatePaintingObject.data.uv_layers.active_index += 1
-                        bpy.ops.paint.texture_paint_toggle()
+        if(materialLocated == False):
+            self.report({'WARNING'}, 'Could not edit sheet \'' + spriteSheetName + '\'. Please use \'Add New Masked Spritesheet Layer\' to set up this spritesheet.')
+        else:
+            #switch to texture paint with minimum material shading mode
+            bpy.ops.paint.texture_paint_toggle()
+            for candidate3darea in bpy.context.screen.areas:
+                if(candidate3darea.type == 'VIEW_3D' and candidate3darea.spaces[0].shading.type != 'MATERIAL' and candidate3darea.spaces[0].shading.type != 'RENDERED'):
+                    candidate3darea.spaces[0].shading.type = 'MATERIAL'
         return {'FINISHED'}
     
 #function to revert to main nodegroup after using temporary nodegroup
@@ -405,17 +423,21 @@ class SHASPRI_OT_ReactivateSheet(bpy.types.Operator):
             if(candidatePaintingObject.name.split('_')[1] in sceneObjects):
                 candidatePaintingObject = sceneObjects[candidatePaintingObject.name.split('_')[1]]
         #determine if object has the required nodegroup and nodes
+        materialLocated = False
         spriteSheetName = context.scene.SHASPRISpritesheetName
         if(candidatePaintingObject.type == 'MESH' and ("shaspri_" + candidatePaintingObject.name + "_nodegroup") in bpy.data.node_groups):
             for candidateMaterial in candidatePaintingObject.material_slots:
                 if('shaspri_NodeGroup' in candidateMaterial.material.node_tree.nodes):
                     nodeGroup = candidateMaterial.material.node_tree.nodes['shaspri_NodeGroup']
                     if(nodeGroup.node_tree.name == 'shaspri_tempnodegroup'):
+                        materialLocated = True
                         nodeGroup.node_tree = bpy.data.node_groups["shaspri_" + candidatePaintingObject.name + "_nodegroup"]
                         bpy.data.node_groups.remove(bpy.data.node_groups['shaspri_tempnodegroup'])
             #remove temporary uv to revert to final uv
             if('shaspri_tempuv' in candidatePaintingObject.data.uv_layers):
                 candidatePaintingObject.data.uv_layers.remove(candidatePaintingObject.data.uv_layers['shaspri_tempuv'])
+        if(materialLocated == False):
+            self.report({'WARNING'}, 'No drivers to reactivate for \'' + spriteSheetName + '\'. Drivers may already be activated or the spritesheet may need to be created.')
         return {'FINISHED'}
     
     
