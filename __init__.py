@@ -391,6 +391,8 @@ class SHASPRI_OT_OffsetEditSheet(bpy.types.Operator):
                         duplicateDataNodeGroup.animation_data_clear()
                         tempOffsetNode.inputs[1].default_value = (0,0,0)
                         tempUVInputNode.uv_map = temporaryUV.name
+                        #prevent loss of original node group during save
+                        nodeGroup.node_tree.use_fake_user = 1
                         nodeGroup.node_tree = duplicateDataNodeGroup
                         #select object with material, set to offset uv layer and enter image paint mode
                         bpy.ops.object.select_all(action='DESELECT')
