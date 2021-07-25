@@ -245,7 +245,7 @@ class SHASPRI_OT_AddMaskedSpriteLayer(bpy.types.Operator):
                             emptyLocationVar.targets[0].id = uvDriverObject
                             axisDrivers[axisNumber].driver.expression = emptyLocationVar.name + '/' + str(context.scene.SHASPRISheetMappingScale)
                             if(context.scene.SHASPRISnapSpritesheet == True):
-                                axisDrivers[axisNumber].driver.expression = 'floor(' + emptyLocationVar.name + ')/' + str(context.scene.SHASPRISheetMappingScale)
+                                axisDrivers[axisNumber].driver.expression = 'floor(abs(' + emptyLocationVar.name + '))/' + str(context.scene.SHASPRISheetMappingScale)
                         #switch image paint to single image
                         bpy.context.scene.tool_settings.image_paint.mode = 'IMAGE'
                 #generate a base color image texture if requested
